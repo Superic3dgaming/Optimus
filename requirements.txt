@@ -1,0 +1,7 @@
+requests>=2.31.0
+pandas>=2.0.0
+numpy>=1.24.0
+python-dateutil>=2.8.2
+python-dotenv>=1.0.1
+# pydantic is optional; only needed if you later enforce schema validation
+# pydantic>=2.6.0

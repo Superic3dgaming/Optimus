@@ -133,12 +133,7 @@ class DeltaDataFeed:
 
     def get_perp_ohlcv(self, symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
         return self._fetch_candles(symbol, timeframe, start, end)
-                except Exception as e:
-            last_error = e
-
-    # If we reach here, v3 and v2 both failed
-    raise RuntimeError("Failed to fetch products from Delta API (tried v3 and v2).")
-
+    
     def _fetch_candles(self, symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
         # Normalize timeframe
         tf_map = {

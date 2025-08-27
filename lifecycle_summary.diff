@@ -1,0 +1,131 @@
+diff --git a/docs/optimus_codex.md b/docs/optimus_codex.md
+index d4ed001..e1ff002 100644
+--- a/docs/optimus_codex.md
++++ b/docs/optimus_codex.md
+@@ -22,6 +22,18 @@
+ - Error: `"ERROR: API reconnecting..."`
+ - Day Summary: `"Gross: $820 | Net: $780 | Win Rate: 66%"`
+ 
++## PR3: Lifecycle + Daily Summary Alerts
++- Bot startup/shutdown alerts
++- Crash handler alert
++- End-of-day PnL summary
++
++### Example Alerts
++- `"Optimus started in PAPER mode | Instrument: ETH | Expiry: 2025-08-29 | Bias: PUT-only"`
++- `"Optimus stopped safely ✅"`
++- `"ERROR: Optimus stopped unexpectedly 🚨"`
++- `"Day Summary | Gross: $820 | Net: $780 | Win Rate: 66%"`
++
++
+diff --git a/main.py b/main.py
+index 1234567..89def02 100644
+--- a/main.py
++++ b/main.py
+@@ -7,6 +7,7 @@ import argparse
+ import logging
+ import os
+ import sys
++from utils.notifier import get_notifier, Notifier
+ 
+ from managers import backtest_manager, paper_manager, live_manager
+ 
+@@ def main():
+-    if args.mode == "backtest":
+-        backtest_manager.run()
+-    elif args.mode == "paper":
+-        paper_manager.run()
+-    elif args.mode == "live":
+-        live_manager.run()
+-    else:
+-        print("Unknown mode")
+-        sys.exit(1)
++    notifier = get_notifier()
++    try:
++        if notifier:
++            notifier.send(f"Optimus started in {args.mode.upper()} mode")
++
++        if args.mode == "backtest":
++            backtest_manager.run()
++        elif args.mode == "paper":
++            paper_manager.run()
++        elif args.mode == "live":
++            live_manager.run()
++        else:
++            print("Unknown mode")
++            sys.exit(1)
++
++        if notifier:
++            notifier.send("Optimus stopped safely ✅")
++    except Exception as e:
++        logging.exception("Fatal error")
++        if notifier:
++            notifier.send(f"ERROR: Optimus stopped unexpectedly 🚨 | {e}")
++        sys.exit(1)
+diff --git a/tests/test_summary.py b/tests/test_summary.py
+new file mode 100644
+index 0000000..7777777
+--- /dev/null
++++ b/tests/test_summary.py
+@@ -0,0 +1,19 @@
++import os
++import csv
++from utils.notifier import Notifier
++
++def test_summary_message(tmp_path):
++    # create fake report file
++    csv_path = tmp_path / "pnl_2025-08-27.csv"
++    with open(csv_path, "w", newline="") as f:
++        writer = csv.DictWriter(f, fieldnames=["pnl"])
++        writer.writeheader()
++        writer.writerow({"pnl": 10})
++        writer.writerow({"pnl": -5})
++
++    msg = Notifier.format_summary_message(str(csv_path))
++    assert "Gross" in msg
++    assert "Net" in msg
++    assert "Win Rate" in msg
++
++
+diff --git a/utils/notifier.py b/utils/notifier.py
+index dddddd..eeeeeee 100644
+--- a/utils/notifier.py
++++ b/utils/notifier.py
+@@ -44,3 +44,35 @@ def get_notifier() -> Notifier | None:
+     if token and chat_id:
+         return Notifier(token, chat_id)
+     return None
++
++
++    @staticmethod
++    def format_summary_message(csv_path: str) -> str:
++        """Generate daily summary message from PnL CSV"""
++        import csv
++
++        gross = 0.0
++        wins = 0
++        total = 0
++        with open(csv_path, newline="") as f:
++            reader = csv.DictReader(f)
++            for row in reader:
++                pnl = float(row.get("pnl", 0))
++                gross += pnl
++                if pnl > 0:
++                    wins += 1
++                total += 1
++
++        win_rate = (wins / total * 100) if total else 0
++        net = gross  # fees not modeled yet
++        return f"Day Summary | Gross: ${gross:.2f} | Net: ${net:.2f} | Win Rate: {win_rate:.1f}%"
++
++    def send_summary(self, csv_path: str):
++        """Send daily summary to Telegram"""
++        msg = Notifier.format_summary_message(csv_path)
++        return self.send(msg)
++
++    def send_startup(self, mode: str, instrument: str, expiry: str, bias: str):
++        return self.send(f"Optimus started in {mode.upper()} mode | Instrument: {instrument} | Expiry: {expiry} | Bias: {bias}")
++
++    def send_shutdown(self):
++        return self.send("Optimus stopped safely ✅")
+

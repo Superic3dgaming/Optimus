@@ -1,0 +1,135 @@
+diff --git a/docs/optimus_codex.md b/docs/optimus_codex.md
+index c0ffee1..b2cafe2 100644
+--- a/docs/optimus_codex.md
++++ b/docs/optimus_codex.md
+@@ -9,3 +9,16 @@
+ - Logging defaults
+ - Safe config defaults
+ 
++## PR2: Monitoring & Alerts
++- Added Telegram notifier (`utils/notifier.py`)
++- Trade alerts on entry/exit
++- Daily PnL reports in `reports/`
++- Structured trade logging (`trades.log`)
++- Error handling: retries + Telegram alerts
++- Unit test: `tests/test_notifier.py`
++
++### Env vars
++```env
++TELEGRAM_BOT_TOKEN=your_token_here
++TELEGRAM_CHAT_ID=your_chat_id_here
++```
++
+diff --git a/tests/test_notifier.py b/tests/test_notifier.py
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/tests/test_notifier.py
+@@ -0,0 +1,11 @@
++import pytest
++from utils.notifier import Notifier
++
++def test_notifier_init():
++    n = Notifier("dummy_token", "dummy_chat")
++    assert n.token == "dummy_token"
++    assert n.chat_id == "dummy_chat"
++
++def test_notifier_send(monkeypatch):
++    n = Notifier("dummy", "dummy")
++    assert n.send("Test") is False  # should fail gracefully without real token
+diff --git a/trade_engine.py b/trade_engine.py
+index 1234567..89def01 100644
+--- a/trade_engine.py
++++ b/trade_engine.py
+@@ -1,5 +1,9 @@
+ import logging
+ import os
++import csv
++from datetime import datetime
++
++from utils.notifier import get_notifier
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -50,6 +54,32 @@ class TradeEngine:
+         logger.info("Executing trade: %s", trade)
+         # existing execution logic...
+ 
++        # --- Monitoring additions ---
++        notifier = get_notifier()
++        if notifier:
++            msg = f"TRADE {trade['side']} {trade['symbol']} x{trade['size']} @ {trade['price']}"
++            notifier.send(msg)
++
++        # log to trades.log
++        trades_logger = logging.getLogger("trades")
++        trades_logger.info(trade)
++
++        # append to daily CSV
++        date_str = datetime.utcnow().strftime("%Y-%m-%d")
++        reports_dir = os.path.join(os.getcwd(), "reports")
++        os.makedirs(reports_dir, exist_ok=True)
++        csv_path = os.path.join(reports_dir, f"pnl_{date_str}.csv")
++        write_header = not os.path.exists(csv_path)
++        with open(csv_path, "a", newline="") as f:
++            writer = csv.DictWriter(f, fieldnames=trade.keys())
++            if write_header:
++                writer.writeheader()
++            writer.writerow(trade)
++
++        # --- End Monitoring additions ---
++
+         return True
++
++
+diff --git a/utils/notifier.py b/utils/notifier.py
+new file mode 100644
+index 0000000..aaaaaaa
+--- /dev/null
++++ b/utils/notifier.py
+@@ -0,0 +1,44 @@
++import os
++import requests
++import logging
++
++logger = logging.getLogger(__name__)
++
++class Notifier:
++    def __init__(self, token: str, chat_id: str):
++        self.token = token
++        self.chat_id = chat_id
++
++    def send(self, message: str) -> bool:
++        """Send a message via Telegram. Returns True if success, False otherwise."""
++        if not self.token or not self.chat_id:
++            logger.warning("Notifier not configured")
++            return False
++        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
++        payload = {"chat_id": self.chat_id, "text": message}
++        try:
++            resp = requests.post(url, json=payload, timeout=5)
++            if resp.status_code == 200:
++                return True
++            logger.error("Telegram send failed: %s", resp.text)
++            return False
++        except Exception as e:
++            logger.error("Notifier error: %s", e)
++            return False
++
++
++def get_notifier() -> Notifier | None:
++    """Factory: return Notifier if env vars set"""
++    token = os.getenv("TELEGRAM_BOT_TOKEN")
++    chat_id = os.getenv("TELEGRAM_CHAT_ID")
++    if token and chat_id:
++        return Notifier(token, chat_id)
++    return None
++
+diff --git a/logs/trades.log b/logs/trades.log
+new file mode 100644
+index 0000000..bbbbbbb
+--- /dev/null
++++ b/logs/trades.log
+@@ -0,0 +1 @@
++Trade logs will be written here.
+

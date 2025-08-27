@@ -131,7 +131,12 @@ class DeltaDataFeed:
 
     def _fetch_candles(self, symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
     # Normalize timeframe
-    tf_map = {"15min": "15m", "15m": "15m", "1h": "1h", "1hr": "1h"}
+    tf_map = {
+        "15min": "15m",
+        "15m": "15m",
+        "1h": "1h",
+        "1hr": "1h",
+    }
     interval = tf_map.get(timeframe.lower(), "15m")
 
     symbol_param = self._symbol_param

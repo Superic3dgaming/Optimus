@@ -312,66 +312,27 @@ class DeltaDataFeed:
         return None
 
     # ---------- Auto-picker ----------
-    def _auto_select_option_pid(self, now_utc: Optional[datetime] = None) -> Optional[int]:
-        """
-        From the full products list:
-          - Filter to options for the desired root (e.g., "ETH" or underlying "ETHUSD")
-          - Select the nearest *future* expiry
-          - Select strike closest to the latest underlying price
-          - Honor OPTIMUS_OPTION_TYPE preference ("call", "put", "both")
-        Returns product_id or None.
-        """
-        df = self._load_products()
+    ddef _auto_select_option_pid(self, root: str, kind: str = "option") -> int:
+    """Auto-select nearest expiry option product_id for a given root (e.g. ETH)."""
+    products = self._load_products().get("result", [])
+    candidates = [
+        p for p in products
+        if p.get("contract_type") == "option"
+        and p.get("underlying_asset", {}).get("symbol") == root
+    ]
 
-        # Filter to options
-        mask_opt = df["product_type"].astype(str).str.contains("options", case=False, na=False)
-        df = df.loc[mask_opt].copy()
-        if df.empty:
-            raise RuntimeError("Products list contains no options.")
+    if not candidates:
+        raise RuntimeError(f"No option products found for {root}")
 
-        # Filter to ETH-rooted contracts
-        root = self.option_root.upper()
-        underlying = self.underlying_symbol.upper()
-        # Accept rows where symbol starts with root-  OR underlying mentions root
-        df = df[(df["symbol"].astype(str).str.upper().str.startswith(root + "-")) |
-                (df["underlying"].astype(str).str.upper().str.contains(root)) |
-                (df["underlying"].astype(str).str.upper().str.contains(underlying))]
-        if df.empty:
-            raise RuntimeError(f"No options found for root={root} / underlying={underlying}.")
+    # sort by expiry date (ascending)
+    candidates.sort(key=lambda x: x.get("settlement_time"))
 
-        # Future expiries only
-        now = now_utc or datetime.now(timezone.utc)
-        df = df[df["expiry_dt"].notna()]
-        df = df[df["expiry_dt"] >= (now - timedelta(minutes=1))]
-        if df.empty:
-            raise RuntimeError("No future/active option expiries found.")
+    # choose nearest expiry
+    product = candidates[0]
+    if self._debug:
+        print(f"[AUTOSELECT] Selected {product['symbol']} -> {product['id']}")
+    return product["id"]
 
-        # Get current underlying price
-        spot = self._get_underlying_price()
-        if not np.isfinite(spot) or spot <= 0:
-            raise RuntimeError("Failed to obtain a valid underlying price for ATM selection.")
-
-        # Keep preferred type
-        pref = self.option_type_pref
-        if pref in ("call", "put"):
-            df = df[df["option_type"].astype(str).str.lower() == pref]
-            if df.empty:
-                raise RuntimeError(f"No {pref} options available for selection.")
-
-        # Choose nearest expiry (min expiry_dt)
-        df = df.sort_values(["expiry_dt"])
-        nearest_expiry = df["expiry_dt"].iloc[0]
-        cexp = df[df["expiry_dt"] == nearest_expiry].copy()
-        if cexp.empty:
-            return None
-
-        # Choose ATM: closest strike to spot
-        cexp["abs_d"] = (pd.to_numeric(cexp["strike_price"], errors="coerce") - spot).abs()
-        cexp = cexp.sort_values(["abs_d"])
-        best = cexp.iloc[0]
-        pid = int(best["product_id"])
-        print(f"[INFO] Auto-selected option: symbol={best['symbol']} pid={pid} expiry={nearest_expiry} strike={best['strike_price']}, spot≈{spot:.2f}")
-        return pid
 
     # ---------- Underlying price ----------
     def _get_underlying_price(self) -> float:

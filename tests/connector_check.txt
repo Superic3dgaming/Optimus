@@ -1,0 +1,5 @@
+echo "hello from Fcuk $(date)" > tests/connector_check.txt
+git add tests/connector_check.txt
+git commit -m "test: add connector check file"
+git push
+

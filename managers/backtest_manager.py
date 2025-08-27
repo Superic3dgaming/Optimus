@@ -1,5 +1,5 @@
-print("DEBUG: running backtest_manager.py")
 from __future__ import annotations
+print("DEBUG: running backtest_manager.py")
 import os
 from datetime import datetime, timedelta, timezone
 from core.logger import get_logger, log_trade

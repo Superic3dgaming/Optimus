@@ -6,9 +6,15 @@ REQUIRED=[
     "datafeeds/delta_datafeed.py",
     "managers/backtest_manager.py","managers/paper_manager.py","managers/live_manager.py",
 ]
-missing=[]
-for p in REQUIRED:
-    if not (os.path.isdir(p) or os.path.isfile(p)): missing.append(p)
-if missing:
-    print("❌ Missing:", *[f" - {m}" for m in missing], sep="\n"); sys.exit(1)
-print(f"✅ Structure looks good. Checked items: {len(REQUIRED)}")
+
+def main():
+    missing=[]
+    for p in REQUIRED:
+        if not (os.path.isdir(p) or os.path.isfile(p)): missing.append(p)
+    if missing:
+        print("❌ Missing:", *[f" - {m}" for m in missing], sep="\n")
+        sys.exit(1)
+    print(f"✅ Structure looks good. Checked items: {len(REQUIRED)}")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,53 @@
+2025-08-27 17:48:39,742 - INFO - Starting Optimus configuration validation...
+2025-08-27 17:48:39,742 - INFO - Repository structure validation passed
+2025-08-27 17:48:39,742 - INFO - === Optimus Configuration ===
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_MODE=BACKTEST (Trading mode: BACKTEST, PAPER, or LIVE)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_DEBUG=<not set> (Enable debug logging (1, true, yes))
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_API_BASE=https://api.delta.exchange (Base URL for Delta Exchange API)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_API_PATH_CANDLES=/v3/public/candles (API path for candles endpoint)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_API_PATH_PRODUCTS=/v3/public/products (API path for products endpoint)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_CANDLES_INTERVAL_PARAM=interval (Parameter name for interval in candles API)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_CANDLES_SYMBOL_PARAM=product_id (Parameter name for symbol in candles API (product_id or symbol))
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_CANDLES_START_PARAM=<not set> (Parameter name for start time in candles API)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_CANDLES_END_PARAM=<not set> (Parameter name for end time in candles API)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_UNDERLYING=ETHUSD (Underlying symbol for perpetual contracts)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_OPTION_ROOT=ETH (Root symbol for options)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_OPTION_TYPE=both (Preferred option type: call, put, or both)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_PERP_PRODUCT_ID=3136 (Product ID for perpetual contract (required if using product_id param))
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_OPTION_PRODUCT_ID=<not set> (Explicit option product ID (bypasses auto-selection))
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_OPTION_SYMBOL=<not set> (Explicit option symbol (bypasses auto-selection))
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_DISABLE_DISCOVERY=1 (Disable API endpoint discovery)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_AUTO_SELECT=1 (Enable automatic option selection)
+2025-08-27 17:48:39,742 - INFO - OPTIMUS_START_EQUITY=<not set> (Starting equity for backtesting)
+2025-08-27 17:48:39,742 - INFO - === End Configuration ===
+2025-08-27 17:48:39,743 - INFO - Configuration validation passed (with 0 warning(s))
+2025-08-27 17:48:39,743 - INFO - Starting Optimus in BACKTEST mode...
+2025-08-27 17:48:39,743 - INFO - Delta Exchange DataFeed initialized:
+2025-08-27 17:48:39,743 - INFO -   Base URL: https://api.delta.exchange
+2025-08-27 17:48:39,743 - INFO -   Candles endpoint: /v3/public/candles
+2025-08-27 17:48:39,743 - INFO -   Products endpoint: /v3/public/products
+2025-08-27 17:48:39,743 - INFO -   Symbol parameter: product_id
+2025-08-27 17:48:39,743 - INFO -   Underlying: ETHUSD
+2025-08-27 17:48:39,743 - INFO -   Option root: ETH
+2025-08-27 17:48:39,743 - INFO -   Auto-select: enabled
+2025-08-27 17:48:39,743 - INFO -   Debug mode: disabled
+2025-08-27 17:48:39,743 - INFO - Auto-selecting option instrument...
+2025-08-27 17:48:39,746 - INFO - Trying API endpoint (2/3): https://api.delta.exchange/v2/public/products
+2025-08-27 17:48:39,749 - INFO - Trying API endpoint (3/3): https://api.delta.exchange/public/products
+2025-08-27 17:48:39,751 - ERROR - All API endpoints failed. Last error: HTTPSConnectionPool(host='api.delta.exchange', port=443): Max retries exceeded with url: /public/products?limit=10000 (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x7fd476354290>: Failed to resolve 'api.delta.exchange' ([Errno -5] No address associated with hostname)"))
+2025-08-27 17:48:39,751 - ERROR - Failed to load products from any endpoint: All API endpoints failed. Tried: ['/v3/public/products', '/v2/public/products', '/public/products']. Last error: HTTPSConnectionPool(host='api.delta.exchange', port=443): Max retries exceeded with url: /public/products?limit=10000 (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x7fd476354290>: Failed to resolve 'api.delta.exchange' ([Errno -5] No address associated with hostname)"))
+2025-08-27 17:48:39,751 - WARNING - Auto-select failed: Failed to load products from any endpoint. Suggestions:
+1. Check your internet connection
+2. Verify OPTIMUS_API_BASE is correct: https://api.delta.exchange
+3. Try different API endpoints by setting OPTIMUS_API_PATH_PRODUCTS
+2025-08-27 17:48:39,751 - INFO - Auto-selection failed. Consider these options:
+1. Set OPTIMUS_OPTION_PRODUCT_ID or OPTIMUS_OPTION_SYMBOL explicitly
+2. Check your internet connection for API access
+3. Verify OPTIMUS_UNDERLYING and OPTIMUS_OPTION_ROOT settings
+4. Set OPTIMUS_DISABLE_DISCOVERY=0 if you want to try discovery mode
+2025-08-27 17:48:39,751 - WARNING - Falling back to option root symbol: ETH (this may not work with all APIs)
+2025-08-27 17:48:39,751 - ERROR - Error running Optimus in BACKTEST mode: Endpoint expects product_id for option candles, but no option product id is available for 'ETH'. Try one of these solutions:
+1. Set OPTIMUS_AUTO_SELECT=1 to automatically select options (requires working API connection)
+2. Set OPTIMUS_OPTION_PRODUCT_ID=<product_id> with a specific option product ID
+3. Change OPTIMUS_CANDLES_SYMBOL_PARAM=symbol if your API accepts symbol names
+4. Check your network connection and API endpoints

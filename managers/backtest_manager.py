@@ -33,7 +33,20 @@ def run(config) -> None:
     perp_1h = feed.get_perp_ohlcv(perp_symbol, "1h", start_s, end_s)
 
     if opt_15m.empty:
-        raise RuntimeError(f"No option candles for {option_symbol} in [{start_s} → {end_s}]. Check your .env settings.")
+        error_msg = (
+            f"No option candles for {option_symbol} in [{start_s} → {end_s}]. "
+            f"This could mean:\n"
+            f"1. The selected option has no trading data in this timeframe\n"
+            f"2. API endpoint issues (check network connectivity)\n"
+            f"3. Invalid option symbol/product_id\n"
+            f"4. Date range too recent or too old\n\n"
+            f"Solutions:\n"
+            f"1. Check your .env settings (OPTIMUS_API_BASE, OPTIMUS_OPTION_PRODUCT_ID)\n"
+            f"2. Try a different date range or option symbol\n"
+            f"3. Enable OPTIMUS_DEBUG=1 for more verbose logging\n"
+            f"4. Verify the option exists in the products list"
+        )
+        raise RuntimeError(error_msg)
 
     strategy = OptimusStrategy()
     risk = RiskManager(max_position_notional=equity*0.2, max_daily_loss=equity*0.05, allow_both_sides=False)

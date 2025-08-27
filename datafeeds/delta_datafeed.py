@@ -86,7 +86,15 @@ class DeltaDataFeed:
         timeout: int = 10,
         autodiscover: bool = True,
     ):
-        self.base_url = base_url.rstrip("/")
+        # Support multiple base URLs for fallback
+        self.base_urls = []
+        api_bases = os.getenv("OPTIMUS_API_BASES", "")
+        if api_bases:
+            self.base_urls = [b.strip().rstrip("/") for b in api_bases.split(",") if b.strip()]
+        if not self.base_urls:
+            self.base_urls = [base_url.rstrip("/")]
+        
+        self.base_url = self.base_urls[0]  # primary base URL
         self.http = ResilientHTTP(timeout_connect=5.0, timeout_read=5.0, default_attempts=2)
         self._debug = os.getenv("OPTIMUS_DEBUG", "").lower() in ("1", "true", "yes")
 
@@ -108,7 +116,7 @@ class DeltaDataFeed:
         self.explicit_opt_pid = os.getenv("OPTIMUS_OPTION_PRODUCT_ID") or ""
         self.explicit_perp_pid = os.getenv("OPTIMUS_PERP_PRODUCT_ID") or ""
 
-        self.disable_discovery = os.getenv("OPTIMUS_DISABLE_DISCOVERY", "1").lower() in ("1", "true", "yes")
+        self.disable_discovery = os.getenv("OPTIMUS_DISABLE_DISCOVERY", "").lower() in ("1", "true", "yes")
         self.autodetect_option = os.getenv("OPTIMUS_AUTO_SELECT", "1").lower() in ("1", "true", "yes")
 
     # ---------- HTTP helpers ----------
@@ -116,11 +124,43 @@ class DeltaDataFeed:
         return {"Content-Type": "application/json"}
 
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None, attempts: int = 1) -> Any:
-        url = f"{self.base_url}{path}"
-        if self._debug:
-            print(f"[DEBUG] GET {url} params={params}")
-        r = self.http.get(url, headers=self._headers(), params=params or {}, attempts=attempts)
-        return r.json()
+        last_error = None
+        
+        # Try all base URLs if discovery is enabled
+        base_urls_to_try = self.base_urls if not self.disable_discovery else [self.base_url]
+        
+        for base_url in base_urls_to_try:
+            url = f"{base_url}{path}"
+            if self._debug:
+                print(f"[DEBUG] GET {url} params={params}")
+            try:
+                r = self.http.get(url, headers=self._headers(), params=params or {}, attempts=attempts)
+                # If successful, update the primary base URL for future requests
+                if base_url != self.base_url:
+                    print(f"[INFO] Switched to working API base: {base_url}")
+                    self.base_url = base_url
+                return r.json()
+            except Exception as e:
+                last_error = e
+                if self._debug:
+                    print(f"[DEBUG] Failed {url}: {e}")
+                continue
+        
+        # All base URLs failed, provide detailed error
+        if last_error:
+            if "404" in str(last_error) or "Not Found" in str(last_error):
+                raise RuntimeError(f"API endpoint not found: {path}. Tried base URLs: {base_urls_to_try}. " +
+                                 f"The endpoint may be deprecated or changed. Check Delta Exchange API documentation.")
+            elif "401" in str(last_error) or "403" in str(last_error):
+                raise RuntimeError(f"API access denied: {path}. Check if API key is required or valid.")
+            elif "429" in str(last_error):
+                raise RuntimeError(f"Rate limited by API: {path}. Reduce request frequency.")
+            elif "5" in str(last_error)[:1]:  # 5xx errors
+                raise RuntimeError(f"API server error: {path}. Try again later or contact Delta Exchange support.")
+            else:
+                raise RuntimeError(f"API request failed for all base URLs {base_urls_to_try}: {path}. Error: {last_error}")
+        else:
+            raise RuntimeError(f"No response from any API base URL {base_urls_to_try} for path: {path}")
 
     # ---------- Candles ----------
     def get_option_ohlcv(self, symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
@@ -191,7 +231,7 @@ class DeltaDataFeed:
         Priority:
           1) Explicit overrides in .env (OPTIMUS_OPTION_SYMBOL / OPTIMUS_OPTION_PRODUCT_ID)
           2) If OPTIMUS_AUTO_SELECT=1, discover nearest expiry ATM option for option_root (e.g., ETH)
-          3) Fallback: return option_root (some endpoints accept an index/root symbol)
+          3) Fallback: Provide clear error with actionable guidance
         """
         # 1) Explicit overrides
         if self.explicit_opt_symbol:
@@ -208,41 +248,74 @@ class DeltaDataFeed:
                 pid = self._auto_select_option_pid(now_utc=now_utc)
                 if pid is not None:
                     if self._symbol_param == "product_id":
+                        print(f"[INFO] Auto-selected option product_id: {pid}")
                         return str(pid)
                     # if endpoint expects symbol, try to find the symbol from products list
                     sym = self._symbol_for_product_id(pid)
                     if sym:
+                        print(f"[INFO] Auto-selected option symbol: {sym} (product_id: {pid})")
                         return sym
                     # if symbol lookup failed, still return pid; _fetch_candles will adapt if using product_id param
+                    print(f"[INFO] Auto-selected option product_id: {pid} (symbol lookup failed)")
                     return str(pid)
             except Exception as e:
-                print(f"[WARN] Auto-select failed: {e}. Will fallback to root symbol.")
+                print(f"[WARN] Auto-select failed: {e}")
+                
+                # Provide actionable error message instead of unsafe fallback
+                error_msg = (
+                    f"Auto-selection failed and no fallback available. To fix this issue:\n"
+                    f"1. Check your network connectivity and OPTIMUS_API_BASE setting\n"
+                    f"2. Set OPTIMUS_OPTION_PRODUCT_ID to a valid option product ID, OR\n"
+                    f"3. Set OPTIMUS_OPTION_SYMBOL to a valid option symbol\n"
+                    f"4. Verify Delta Exchange API endpoints are accessible\n"
+                    f"Current settings: API_BASE={self.base_url}, SYMBOL_PARAM={self._symbol_param}\n"
+                    f"Original error: {e}"
+                )
+                raise RuntimeError(error_msg)
 
-        # 3) Fallback: root (rarely accepted for options; mostly for indices)
-        return self.option_root
+        # 3) If auto-select disabled, require explicit configuration
+        error_msg = (
+            f"No option instrument configured. Please either:\n"
+            f"1. Set OPTIMUS_AUTO_SELECT=1 to enable automatic selection, OR\n"
+            f"2. Set OPTIMUS_OPTION_PRODUCT_ID to a specific option product ID, OR\n"
+            f"3. Set OPTIMUS_OPTION_SYMBOL to a specific option symbol\n"
+            f"Current root: {self.option_root}, underlying: {self.underlying_symbol}"
+        )
+        raise RuntimeError(error_msg)
 
     # ---------- Product catalog ----------
     def _load_products(self, limit: int = 10000) -> pd.DataFrame:
         """
-        Try v3 then v2 products. Return a normalized DataFrame with fields we care about:
+        Try multiple products endpoints with fallback. Return a normalized DataFrame with fields we care about:
           product_id, symbol, product_type, underlying, option_type, strike_price, settle_time (UTC)
         """
+        # Try configured path first, then all fallback paths
         paths = [self._products_path] if self._products_path else []
         for p in self.PRODUCT_PATHS:
             if p not in paths:
                 paths.append(p)
 
         last_err = None
+        tried_combinations = []
+        
         for path in paths:
             try:
+                if self._debug:
+                    print(f"[DEBUG] Trying products endpoint: {path}")
                 data = self._get(path, {"limit": limit}, attempts=1)
                 items = data if isinstance(data, list) else data.get("result") or data.get("data") or data.get("products")
                 if not isinstance(items, list):
+                    if self._debug:
+                        print(f"[DEBUG] No products list found in response from {path}")
                     continue
                 df = pd.DataFrame(items)
                 if df.empty:
+                    if self._debug:
+                        print(f"[DEBUG] Empty products list from {path}")
                     continue
-                # Normalize columns
+                    
+                print(f"[INFO] Successfully loaded {len(df)} products from {self.base_url}{path}")
+                # Normalize columns (keeping existing logic)
                 cols = df.columns
                 # Commonly present:
                 # - product_id (int)
@@ -289,12 +362,21 @@ class DeltaDataFeed:
                 out = df[keep_cols].dropna(subset=["product_id", "symbol", "product_type"], how="any")
                 return out
             except Exception as e:
+                tried_combinations.append(f"{self.base_url}{path}")
+                if self._debug:
+                    print(f"[DEBUG] Failed to load products from {self.base_url}{path}: {e}")
                 last_err = e
                 continue
 
+        # If all endpoints failed, provide actionable error message
         if last_err:
-            raise last_err
-        raise RuntimeError("Failed to load products: no valid response from any products endpoint.")
+            raise RuntimeError(f"Failed to load products from any endpoint. Tried: {tried_combinations}. " +
+                             f"Last error: {last_err}. " +
+                             f"Solutions: 1) Check network connectivity, 2) Verify OPTIMUS_API_BASE setting, " +
+                             f"3) Set explicit OPTIMUS_OPTION_PRODUCT_ID to bypass discovery, " +
+                             f"4) Check Delta Exchange API documentation for current endpoints.")
+        raise RuntimeError(f"Failed to load products: no valid response from any endpoint. Tried: {tried_combinations}. " +
+                         f"Set explicit OPTIMUS_OPTION_PRODUCT_ID to bypass discovery.")
 
     def _symbol_for_product_id(self, pid: int) -> Optional[str]:
         try:

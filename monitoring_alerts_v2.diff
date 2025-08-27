@@ -1,0 +1,126 @@
+diff --git a/docs/optimus_codex.md b/docs/optimus_codex.md
+index b2cafe2..d4ed001 100644
+--- a/docs/optimus_codex.md
++++ b/docs/optimus_codex.md
+@@ -16,6 +16,17 @@
+ - Unit test: `tests/test_notifier.py`
+ 
+ ### Env vars
+-```env
+-TELEGRAM_BOT_TOKEN=your_token_here
+-TELEGRAM_CHAT_ID=your_chat_id_here
+-```
++```env
++TELEGRAM_BOT_TOKEN=your_token_here
++TELEGRAM_CHAT_ID=your_chat_id_here
++```
++
++### Alert Formats
++- Bot start: `"Optimus started in PAPER mode | Instrument: ETH | Expiry: 2025-08-29 | Bias: PUT-only"`
++- Trade entry: `"BUY ETH-29AUG-2800P x200 @ $12.50 | SL: $14.20 | TP: $9.80"`
++- Trade exit: `"EXIT ETH-29AUG-2800P x200 @ $11.10 | PnL: +$280.00 (+11.5%) | Reason: KC TP Hit"`
++- Error: `"ERROR: API reconnecting..."`
++- Day Summary: `"Gross: $820 | Net: $780 | Win Rate: 66%"`
++
+diff --git a/tests/test_notifier.py b/tests/test_notifier.py
+index 5555555..6666666 100644
+--- a/tests/test_notifier.py
++++ b/tests/test_notifier.py
+@@ -8,4 +8,7 @@ def test_notifier_init():
+ 
+ def test_notifier_send(monkeypatch):
+     n = Notifier("dummy", "dummy")
+-    assert n.send("Test") is False  # should fail gracefully without real token
++    assert n.send("Test") is False  # should fail gracefully without real token
++
++def test_format_trade_msg():
++    msg = Notifier.format_trade_message("BUY", "ETH-29AUG-2800P", 200, 12.5, 14.2, 9.8)
++    assert "BUY ETH-29AUG-2800P x200 @ $12.50" in msg
+diff --git a/trade_engine.py b/trade_engine.py
+index 89def01..c7e4321 100644
+--- a/trade_engine.py
++++ b/trade_engine.py
+@@ -54,12 +54,49 @@ class TradeEngine:
+         logger.info("Executing trade: %s", trade)
+         # existing execution logic...
+ 
+-        # --- Monitoring additions ---
+-        notifier = get_notifier()
+-        if notifier:
+-            msg = f"TRADE {trade['side']} {trade['symbol']} x{trade['size']} @ {trade['price']}"
+-            notifier.send(msg)
+-
+-        # log to trades.log
++        # --- Monitoring additions ---
++        notifier = get_notifier()
++        if notifier:
++            entry_msg = Notifier.format_trade_message(
++                trade["side"],
++                trade["symbol"],
++                trade["size"],
++                trade["price"],
++                trade.get("sl"),
++                trade.get("tp"),
++            )
++            notifier.send(entry_msg)
++
++        # log trade dict to trades.log
+         trades_logger = logging.getLogger("trades")
+         trades_logger.info(trade)
+ 
+-        # append to daily CSV
++        # append to daily CSV + include PnL if exit
+         date_str = datetime.utcnow().strftime("%Y-%m-%d")
+         reports_dir = os.path.join(os.getcwd(), "reports")
+         os.makedirs(reports_dir, exist_ok=True)
+         csv_path = os.path.join(reports_dir, f"pnl_{date_str}.csv")
+         write_header = not os.path.exists(csv_path)
+-        with open(csv_path, "a", newline="") as f:
+-            writer = csv.DictWriter(f, fieldnames=trade.keys())
+-            if write_header:
+-                writer.writeheader()
+-            writer.writerow(trade)
++        with open(csv_path, "a", newline="") as f:
++            writer = csv.DictWriter(f, fieldnames=trade.keys())
++            if write_header:
++                writer.writeheader()
++            writer.writerow(trade)
++
++        # trade exit alert if pnl available
++        if notifier and "pnl" in trade:
++            exit_msg = (
++                f"EXIT {trade['symbol']} x{trade['size']} @ {trade.get('exit_price','?')} "
++                f"| PnL: {trade['pnl']} ({trade.get('pnl_pct','?%')}) "
++                f"| Reason: {trade.get('exit_reason','N/A')}"
++            )
++            notifier.send(exit_msg)
++
++        # --- End Monitoring additions ---
+ 
+         return True
++
++
+diff --git a/utils/notifier.py b/utils/notifier.py
+index aaaaaaa..ddddddd 100644
+--- a/utils/notifier.py
++++ b/utils/notifier.py
+@@ -27,6 +27,23 @@ class Notifier:
+             return False
++
++    @staticmethod
++    def format_trade_message(
++        side: str,
++        symbol: str,
++        size: int,
++        price: float,
++        sl: float | None = None,
++        tp: float | None = None,
++    ) -> str:
++        """Format a trade alert similar to Tradebot style"""
++        msg = f"{side.upper()} {symbol} x{size} @ ${price:.2f}"
++        if sl:
++            msg += f" | SL: ${sl:.2f}"
++        if tp:
++            msg += f" | TP: ${tp:.2f}"
++        return msg
+

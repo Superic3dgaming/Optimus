@@ -1,3 +1,54 @@
+"""
+Delta Exchange API Data Feed with Robust Error Handling
+
+This module provides a comprehensive data feed implementation for Delta Exchange
+with the following features:
+
+1. **Robust API Endpoint Fallback**: Automatically tries v3 → v2 → legacy endpoints
+2. **Flexible Parameter Support**: Works with both product_id and symbol parameters
+3. **Comprehensive Error Handling**: Provides helpful error messages and suggestions
+4. **Automatic Option Selection**: Can auto-select ATM options or use explicit overrides
+5. **Configuration Transparency**: Logs all configuration values for debugging
+6. **Network Resilience**: Handles network failures gracefully with retry logic
+
+Environment Variables:
+    Core Configuration:
+        OPTIMUS_API_BASE: Base URL for the API (default: https://api.delta.exchange)
+        OPTIMUS_CANDLES_SYMBOL_PARAM: 'product_id' or 'symbol' (default: product_id)
+        
+    API Endpoints (optional, uses automatic fallback if not set):
+        OPTIMUS_API_PATH_CANDLES: Custom candles endpoint path
+        OPTIMUS_API_PATH_PRODUCTS: Custom products endpoint path
+        
+    Market Configuration:
+        OPTIMUS_UNDERLYING: Underlying symbol (default: ETHUSD)
+        OPTIMUS_OPTION_ROOT: Option root symbol (default: ETH)
+        OPTIMUS_OPTION_TYPE: call, put, or both (default: both)
+        
+    Product IDs (required when using product_id parameter):
+        OPTIMUS_PERP_PRODUCT_ID: Perpetual contract product ID
+        OPTIMUS_OPTION_PRODUCT_ID: Explicit option product ID (bypasses auto-selection)
+        
+    Alternative Symbol Configuration:
+        OPTIMUS_OPTION_SYMBOL: Explicit option symbol (bypasses auto-selection)
+        
+    Behavior Controls:
+        OPTIMUS_AUTO_SELECT: Enable automatic option selection (default: 1)
+        OPTIMUS_DEBUG: Enable debug logging (default: 0)
+
+Example Usage:
+    Basic usage with auto-selection:
+        feed = DeltaDataFeed("https://api.delta.exchange")
+        df = feed.get_option_ohlcv("auto", "15min", start_time, end_time)
+    
+    Explicit option specification:
+        os.environ["OPTIMUS_OPTION_PRODUCT_ID"] = "12345"
+        feed = DeltaDataFeed("https://api.delta.exchange")
+        df = feed.get_option_ohlcv("12345", "15min", start_time, end_time)
+
+Author: Optimus Team
+Version: 2.0 (Enhanced with robust error handling)
+"""
 from __future__ import annotations
 from typing import Optional, Dict, Any, Tuple, List
 import os, json
@@ -69,9 +120,28 @@ def _ensure_ohlc_indexed(df: pd.DataFrame) -> pd.DataFrame:
 
 class DeltaDataFeed:
     """
-    Autonomous Delta public API adapter:
-      - Can work discovery-free via env (product_id or symbol)
-      - Or auto-pick the nearest-expiry ATM option for a given root (e.g., ETH)
+    Robust Delta Exchange public API adapter with comprehensive error handling.
+    
+    Features:
+    - Automatic API endpoint fallback (v3 → v2 → legacy)
+    - Comprehensive error handling with helpful suggestions
+    - Flexible symbol/product_id parameter support
+    - Automatic option selection or explicit overrides
+    - Extensive configuration logging for transparency
+    - Robust handling of network issues and API failures
+    
+    Configuration via environment variables:
+    - OPTIMUS_API_BASE: Base URL (default: https://api.delta.exchange)
+    - OPTIMUS_API_PATH_CANDLES: Candles endpoint path
+    - OPTIMUS_API_PATH_PRODUCTS: Products endpoint path
+    - OPTIMUS_CANDLES_SYMBOL_PARAM: 'product_id' or 'symbol'
+    - OPTIMUS_AUTO_SELECT: Enable automatic option selection
+    - OPTIMUS_OPTION_PRODUCT_ID: Explicit option product ID
+    - OPTIMUS_PERP_PRODUCT_ID: Required if using product_id param
+    
+    Usage:
+        feed = DeltaDataFeed("https://api.delta.exchange")
+        df = feed.get_option_ohlcv("12345", "15min", start, end)
     """
 
     CANDLE_PATHS = ["/v3/public/candles", "/v2/public/candles", "/public/candles"]

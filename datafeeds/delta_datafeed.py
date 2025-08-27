@@ -7,6 +7,11 @@ import numpy as np
 import pandas as pd
 
 from core.http import ResilientHTTP
+# Only v3 endpoint is valid, v2 is deprecated
+PRODUCT_PATHS = [
+    "/v3/public/products",
+]
+
 
 STATE_DIR = "state"
 STATE_FILE = os.path.join(STATE_DIR, "auto_config.json")
@@ -77,8 +82,7 @@ class DeltaDataFeed:
     CANDLE_PATHS = ["/v3/public/candles", "/v2/public/candles", "/public/candles"]
     # Product endpoints (drop deprecated /public/products)
     PRODUCT_PATHS = [
-        "/v3/public/products",
-        "/v2/public/products",
+        "/v3/public/products",        
     ]
 
     INTERVAL_PARAMS = ["interval", "resolution", "granularity"]
@@ -190,116 +194,40 @@ class DeltaDataFeed:
 
 
     # ---------- Auto selection ----------
-    def pick_option_instrument(self, config: dict, now_utc: Optional[datetime] = None) -> str:
-        """
-        Returns either a product_id (str) or a symbol (str), depending on OPTIMUS_CANDLES_SYMBOL_PARAM.
-        Priority:
-          1) Explicit overrides in .env (OPTIMUS_OPTION_SYMBOL / OPTIMUS_OPTION_PRODUCT_ID)
-          2) If OPTIMUS_AUTO_SELECT=1, discover nearest expiry ATM option for option_root (e.g., ETH)
-          3) Fallback: return option_root (some endpoints accept an index/root symbol)
-        """
-        # 1) Explicit overrides
-        if self.explicit_opt_symbol:
-            print(f"[INFO] Using OPTIMUS_OPTION_SYMBOL={self.explicit_opt_symbol}")
-            return self.explicit_opt_symbol
+    def pick_option_instrument(self, config):
+        # explicit override
         if self.explicit_opt_pid:
-            int(self.explicit_opt_pid)  # validate numeric
-            print(f"[INFO] Using OPTIMUS_OPTION_PRODUCT_ID={self.explicit_opt_pid} (bypassing product list)")
-            return str(self.explicit_opt_pid)
-
-        # 2) Auto-select if enabled
-        if self.autodetect_option:
             try:
-                pid = self._auto_select_option_pid(now_utc=now_utc)
-                if pid is not None:
-                    if self._symbol_param == "product_id":
-                        return str(pid)
-                    # if endpoint expects symbol, try to find the symbol from products list
-                    sym = self._symbol_for_product_id(pid)
-                    if sym:
-                        return sym
-                    # if symbol lookup failed, still return pid; _fetch_candles will adapt if using product_id param
-                    return str(pid)
-            except Exception as e:
-                print(f"[WARN] Auto-select failed: {e}. Will fallback to root symbol.")
+                int(self.explicit_opt_pid)
+                return self.explicit_opt_pid
+            except ValueError:
+                raise RuntimeError("Invalid OPTIMUS_OPTION_PRODUCT_ID (must be numeric).")
 
-        # 3) Fallback: root (rarely accepted for options; mostly for indices)
-        return self.option_root
+        # auto-select enabled
+        if os.getenv("OPTIMUS_AUTO_SELECT", "0") == "1":
+            try:
+                return self._auto_select_option_pid()
+            except Exception as e:
+                raise RuntimeError(f"Auto-select failed: {e}")
+
+        # fallback = error (never return 'ETH' directly)
+        raise RuntimeError("No valid option product_id available. "
+                           "Set OPTIMUS_OPTION_PRODUCT_ID or enable OPTIMUS_AUTO_SELECT=1")
+
 
     # ---------- Product catalog ----------
-    def _load_products(self, limit: int = 10000) -> pd.DataFrame:
-        """
-        Try v3 then v2 products. Return a normalized DataFrame with fields we care about:
-          product_id, symbol, product_type, underlying, option_type, strike_price, settle_time (UTC)
-        """
-        paths = [self._products_path] if self._products_path else []
-        for p in self.PRODUCT_PATHS:
-            if p not in paths:
-                paths.append(p)
-
+    def _load_products(self, limit: int = 10000):
         last_err = None
-        for path in paths:
+        for path in PRODUCT_PATHS:
+            url = f"{self.base_url}{path}"
             try:
                 data = self._get(path, {"limit": limit}, attempts=1)
-                items = data if isinstance(data, list) else data.get("result") or data.get("data") or data.get("products")
-                if not isinstance(items, list):
-                    continue
-                df = pd.DataFrame(items)
-                if df.empty:
-                    continue
-                # Normalize columns
-                cols = df.columns
-                # Commonly present:
-                # - product_id (int)
-                # - symbol (str) e.g., "ETH-29AUG24-2500-C"
-                # - product_type e.g., "call_options"/"put_options"/"perpetual_futures"
-                # Optional fields:
-                # - underlying (e.g., "ETHUSD" or "ETH")
-                # - option_type ("call"/"put")
-                # - strike_price (float)
-                # - settle_time / expiry datetime
-
-                # Try to create normalized fields:
-                df["product_id"] = pd.to_numeric(df.get("product_id"), errors="coerce")
-                df["symbol"] = df.get("symbol")
-                df["product_type"] = df.get("product_type") or df.get("type")
-
-                # option_type
-                if "option_type" not in df.columns:
-                    # infer from product_type
-                    df["option_type"] = np.where(df["product_type"].astype(str).str.contains("call", case=False), "call",
-                                      np.where(df["product_type"].astype(str).str.contains("put", case=False), "put", None))
-
-                # strike
-                if "strike_price" not in df.columns:
-                    df["strike_price"] = pd.to_numeric(df.get("strike") or df.get("strikePrice"), errors="coerce")
-
-                # underlying
-                if "underlying" not in df.columns:
-                    df["underlying"] = df.get("underlying_symbol") or df.get("underlying_asset") or df.get("base_asset")
-
-                # expiry
-                expiry_col = None
-                for c in ["settle_time", "expiry_time", "expiration_time", "expiry", "expiry_at"]:
-                    if c in df.columns:
-                        expiry_col = c; break
-                if expiry_col:
-                    # parse to UTC
-                    df["expiry_dt"] = pd.to_datetime(df[expiry_col], utc=True, errors="coerce")
-                else:
-                    df["expiry_dt"] = pd.NaT
-
-                # Keep only rows we understand
-                keep_cols = ["product_id", "symbol", "product_type", "underlying", "option_type", "strike_price", "expiry_dt"]
-                out = df[keep_cols].dropna(subset=["product_id", "symbol", "product_type"], how="any")
-                return out
+                return data
             except Exception as e:
                 last_err = e
-                continue
+        raise RuntimeError(f"Failed to fetch products from Delta API, last error: {last_err}")
 
-        if last_err:
-            raise last_err
-        raise RuntimeError("Failed to load products: no valid response from any products endpoint.")
+
 
     def _symbol_for_product_id(self, pid: int) -> Optional[str]:
         try:
@@ -312,26 +240,36 @@ class DeltaDataFeed:
         return None
 
     # ---------- Auto-picker ----------
-    ddef _auto_select_option_pid(self, root: str, kind: str = "option") -> int:
-    """Auto-select nearest expiry option product_id for a given root (e.g. ETH)."""
-    products = self._load_products().get("result", [])
-    candidates = [
-        p for p in products
-        if p.get("contract_type") == "option"
-        and p.get("underlying_asset", {}).get("symbol") == root
-    ]
+    def _auto_select_option_pid(
+        self,
+        root: str = None,
+        kind: str = "option",
+        now_utc=None
+    ) -> int:
+        """Auto-select nearest expiry option product_id for given root (default: from config)."""
 
-    if not candidates:
-        raise RuntimeError(f"No option products found for {root}")
+        # fallback to env if not provided
+        if root is None:
+            root = os.getenv("OPTIMUS_OPTION_ROOT", "ETH")
 
-    # sort by expiry date (ascending)
-    candidates.sort(key=lambda x: x.get("settlement_time"))
+        products = self._load_products().get("result", [])
+        candidates = [
+            p for p in products
+            if p.get("contract_type") == "option"
+            and p.get("underlying_asset", {}).get("symbol") == root
+        ]
 
-    # choose nearest expiry
-    product = candidates[0]
-    if self._debug:
-        print(f"[AUTOSELECT] Selected {product['symbol']} -> {product['id']}")
-    return product["id"]
+        if not candidates:
+            raise RuntimeError(f"No option products found for {root}")
+
+        # sort by expiry (nearest first)
+        candidates.sort(key=lambda x: x.get("settlement_time"))
+
+        product = candidates[0]
+        if self._debug:
+            print(f"[AUTOSELECT] Selected {product['symbol']} -> {product['id']}")
+        return product["id"]
+
 
 
     # ---------- Underlying price ----------

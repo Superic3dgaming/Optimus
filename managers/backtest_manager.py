@@ -26,6 +26,7 @@ def run(config) -> None:
     equity = float(os.getenv("OPTIMUS_START_EQUITY", config.get("account",{}).get("starting_equity", 10000.0)))
 
     feed = _pick_feed(config)
+    print(feed, type(feed), dir(feed))
     option_symbol = feed.pick_option_instrument(config)
     perp_symbol = os.getenv("OPTIMUS_UNDERLYING", config.get("market",{}).get("perp_symbol","ETHUSD"))
 

@@ -130,58 +130,58 @@ class DeltaDataFeed:
         return self._fetch_candles(symbol, timeframe, start, end)
 
     def _fetch_candles(self, symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
-    # Normalize timeframe
-    tf_map = {
-        "15min": "15m",
-        "15m": "15m",
-        "1h": "1h",
-        "1hr": "1h",
-    }
-    interval = tf_map.get(timeframe.lower(), "15m")
+        # Normalize timeframe
+        tf_map = {
+            "15min": "15m",
+            "15m": "15m",
+            "1h": "1h",
+            "1hr": "1h",
+        }
+        interval = tf_map.get(timeframe.lower(), "15m")
 
-    symbol_param = self._symbol_param
-    value = symbol
+        symbol_param = self._symbol_param
+        value = symbol
 
-    if symbol_param == "product_id":
-        # Only treat exact underlying tickers as perps; NOT roots like "ETH" or "BTC"
-        UNDERLYINGS = {"ETHUSD", "BTCUSD"}
-        try:
-            value = int(symbol)  # numeric product id is fine
-        except Exception:
-            if symbol.upper() in UNDERLYINGS:
-                if not self.explicit_perp_pid:
-                    raise RuntimeError(
-                        "Endpoint expects product_id but OPTIMUS_PERP_PRODUCT_ID is not set for underlying."
-                    )
-                value = int(self.explicit_perp_pid)
-            else:
-                # Option request must have an option product_id (auto-select or explicit)
-                if not self.explicit_opt_pid:
-                    raise RuntimeError(
-                        "Endpoint expects product_id for option candles, but no option product id is available. "
-                        "Enable OPTIMUS_AUTO_SELECT=1 or set OPTIMUS_OPTION_PRODUCT_ID."
-                    )
-                value = int(self.explicit_opt_pid)
+        if symbol_param == "product_id":
+            # Only treat exact underlying tickers as perps; NOT roots like "ETH" or "BTC"
+            UNDERLYINGS = {"ETHUSD", "BTCUSD"}
+            try:
+                value = int(symbol)  # numeric product id is fine
+            except Exception:
+                if symbol.upper() in UNDERLYINGS:
+                    if not self.explicit_perp_pid:
+                        raise RuntimeError(
+                            "Endpoint expects product_id but OPTIMUS_PERP_PRODUCT_ID is not set for underlying."
+                        )
+                    value = int(self.explicit_perp_pid)
+                else:
+                    # Option request must have an option product_id (auto-select or explicit)
+                    if not self.explicit_opt_pid:
+                        raise RuntimeError(
+                            "Endpoint expects product_id for option candles, but no option product id is available. "
+                            "Enable OPTIMUS_AUTO_SELECT=1 or set OPTIMUS_OPTION_PRODUCT_ID."
+                        )
+                    value = int(self.explicit_opt_pid)
 
-    params = {
-        self._interval_param: interval,
-        symbol_param: value,
-        "limit": 1000,
-        self._start_param: start,
-        self._end_param: end,
-    }
+        params = {
+            self._interval_param: interval,
+            symbol_param: value,
+            "limit": 1000,
+            self._start_param: start,
+            self._end_param: end,
+        }
 
-    data = self._get(self._candles_path, params, attempts=1)
+        data = self._get(self._candles_path, params, attempts=1)
 
-    payload = data if isinstance(data, list) else None
-    if payload is None and isinstance(data, dict):
-        for k in ("result", "data", "candles", "items"):
-            if isinstance(data.get(k), list):
-                payload = data[k]
-                break
+        payload = data if isinstance(data, list) else None
+        if payload is None and isinstance(data, dict):
+            for k in ("result", "data", "candles", "items"):
+                if isinstance(data.get(k), list):
+                    payload = data[k]
+                    break
 
-    df = pd.DataFrame(payload or [])
-    return _ensure_ohlc_indexed(df)
+        df = pd.DataFrame(payload or [])
+        return _ensure_ohlc_indexed(df)
 
 
     # ---------- Auto selection ----------

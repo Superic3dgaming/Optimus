@@ -75,7 +75,12 @@ class DeltaDataFeed:
     """
 
     CANDLE_PATHS = ["/v3/public/candles", "/v2/public/candles", "/public/candles"]
-    PRODUCT_PATHS = ["/v3/public/products", "/v2/public/products", "/public/products"]
+    # Product endpoints (drop deprecated /public/products)
+    PRODUCT_PATHS = [
+        "/v3/public/products",
+        "/v2/public/products",
+    ]
+
     INTERVAL_PARAMS = ["interval", "resolution", "granularity"]
     SYMBOL_PARAMS = ["product_id", "symbol", "instrument_name", "name"]
 
@@ -128,6 +133,11 @@ class DeltaDataFeed:
 
     def get_perp_ohlcv(self, symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
         return self._fetch_candles(symbol, timeframe, start, end)
+                except Exception as e:
+            last_error = e
+
+    # If we reach here, v3 and v2 both failed
+    raise RuntimeError("Failed to fetch products from Delta API (tried v3 and v2).")
 
     def _fetch_candles(self, symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
         # Normalize timeframe

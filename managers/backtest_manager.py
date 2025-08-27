@@ -1,3 +1,4 @@
+print("DEBUG: running backtest_manager.py")
 from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone

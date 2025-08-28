@@ -1,318 +1,112 @@
-from __future__ import annotations
-from typing import Optional, Dict, Any, Tuple, List
-import os, json
-from datetime import datetime, timezone, timedelta
-
-import numpy as np
+import os
+import requests
 import pandas as pd
-
-from core.http import ResilientHTTP
-# Only v3 endpoint is valid, v2 is deprecated
-PRODUCT_PATHS = [
-    "/v3/public/products",
-]
-
-
-STATE_DIR = "state"
-STATE_FILE = os.path.join(STATE_DIR, "auto_config.json")
-
-
-def _save_state(d: dict) -> None:
-    os.makedirs(STATE_DIR, exist_ok=True)
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(d, f, indent=2)
-
-
-def _infer_epoch_unit(x: float) -> str:
-    try:
-        xv = float(x)
-    except Exception:
-        return "s"
-    return "ms" if xv > 1e12 else "s"
-
-
-def _ensure_ohlc_indexed(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["open", "high", "low", "close"])
-
-    out = df.copy()
-
-    # rename to open/high/low/close if API uses different keys
-    renames = [
-        {"o": "open", "h": "high", "l": "low", "c": "close"},
-        {"open_price": "open", "high_price": "high", "low_price": "low", "close_price": "close"},
-        {"openPrice": "open", "highPrice": "high", "lowPrice": "low", "closePrice": "close"},
-    ]
-    for cmap in renames:
-        hit = set(cmap.keys()) & set(out.columns)
-        if hit:
-            out = out.rename(columns=cmap)
-
-    # find a timestamp column if present
-    ts_col = next(
-        (c for c in ["t", "time", "timestamp", "start_at", "date", "datetime", "start_time"] if c in out.columns),
-        None
-    )
-
-    if ts_col is None:
-        if not isinstance(out.index, pd.DatetimeIndex):
-            out.index = pd.to_datetime(out.index, utc=True, errors="coerce")
-    else:
-        if np.issubdtype(out[ts_col].dtype, np.number):
-            unit = _infer_epoch_unit(out[ts_col].iloc[0])
-            out[ts_col] = pd.to_datetime(out[ts_col], unit=unit, utc=True, errors="coerce")
-        else:
-            out[ts_col] = pd.to_datetime(out[ts_col], utc=True, errors="coerce")
-        out = out.set_index(ts_col).sort_index()
-
-    for c in ["open", "high", "low", "close"]:
-        if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
-
-    return out[["open", "high", "low", "close"]].dropna()
+from core.http import HttpClient
 
 
 class DeltaDataFeed:
     """
-    Autonomous Delta public API adapter:
-      - Can work discovery-free via env (product_id or symbol)
-      - Or auto-pick the nearest-expiry ATM option for a given root (e.g., ETH)
+    DataFeed client for Delta Exchange
     """
 
-    CANDLE_PATHS = ["/v3/public/candles", "/v2/public/candles", "/public/candles"]
-    # Product endpoints (drop deprecated /public/products)
-    PRODUCT_PATHS = [
-        "/v3/public/products",        
-    ]
-
-    INTERVAL_PARAMS = ["interval", "resolution", "granularity"]
-    SYMBOL_PARAMS = ["product_id", "symbol", "instrument_name", "name"]
-
-    def __init__(
-        self,
-        base_url: str,
-        api_key: Optional[str] = None,
-        timeout: int = 10,
-        autodiscover: bool = True,
-    ):
+    def __init__(self, base_url="https://api.delta.exchange", autodiscover=True, debug=True):
         self.base_url = base_url.rstrip("/")
-        self.http = ResilientHTTP(timeout_connect=5.0, timeout_read=5.0, default_attempts=2)
-        self._debug = os.getenv("OPTIMUS_DEBUG", "").lower() in ("1", "true", "yes")
+        self.http = HttpClient()
+        self.debug = debug
+        self._products_cache = None
 
-        # Paths & params from env (with sensible defaults)
-        self._candles_path = os.getenv("OPTIMUS_API_PATH_CANDLES") or "/v3/public/candles"
-        self._products_path = os.getenv("OPTIMUS_API_PATH_PRODUCTS") or "/v3/public/products"
-        self._interval_param = os.getenv("OPTIMUS_CANDLES_INTERVAL_PARAM") or "interval"
-        self._symbol_param = os.getenv("OPTIMUS_CANDLES_SYMBOL_PARAM") or "product_id"
-        self._start_param = os.getenv("OPTIMUS_CANDLES_START_PARAM") or "start_time"
-        self._end_param = os.getenv("OPTIMUS_CANDLES_END_PARAM") or "end_time"
+        if autodiscover:
+            self._load_products()
 
-        # Market config
-        self.underlying_symbol = os.getenv("OPTIMUS_UNDERLYING", "ETHUSD")
-        self.option_root = os.getenv("OPTIMUS_OPTION_ROOT", "ETH")
-        self.option_type_pref = os.getenv("OPTIMUS_OPTION_TYPE", "both").lower()  # "call" / "put" / "both"
-
-        # Explicit override (discovery-free)
-        self.explicit_opt_symbol = os.getenv("OPTIMUS_OPTION_SYMBOL") or ""
-        self.explicit_opt_pid = os.getenv("OPTIMUS_OPTION_PRODUCT_ID") or ""
-        self.explicit_perp_pid = os.getenv("OPTIMUS_PERP_PRODUCT_ID") or ""
-
-        self.disable_discovery = os.getenv("OPTIMUS_DISABLE_DISCOVERY", "1").lower() in ("1", "true", "yes")
-        self.autodetect_option = os.getenv("OPTIMUS_AUTO_SELECT", "1").lower() in ("1", "true", "yes")
-
-    # ---------- HTTP helpers ----------
-    def _headers(self) -> Dict[str, str]:
-        return {"Content-Type": "application/json"}
-
-    def _get(self, path: str, params: Optional[Dict[str, Any]] = None, attempts: int = 1) -> Any:
+    # -------------------------------
+    # Internal helpers
+    # -------------------------------
+    def _get(self, path: str, params=None, attempts=3):
         url = f"{self.base_url}{path}"
-        if self._debug:
+        if self.debug:
             print(f"[DEBUG] GET {url} params={params}")
-        r = self.http.get(url, headers=self._headers(), params=params or {}, attempts=attempts)
+        r = self.http.get(url, params=params or {}, attempts=attempts)
         return r.json()
 
-    # ---------- Candles ----------
+    def _load_products(self):
+        """
+        Cache product list from Delta.
+        """
+        if self._products_cache is not None:
+            return self._products_cache
+
+        data = self._get("/v2/products", {"limit": 10000})
+        products = data.get("result", [])
+        if self.debug:
+            print(f"[DEBUG] Loaded {len(products)} products from Delta")
+
+        self._products_cache = products
+        return products
+
+    # -------------------------------
+    # Public API
+    # -------------------------------
+    def pick_option_instrument(self, config) -> str:
+        """
+        Auto-select an ETH option contract (nearest expiry + first strike).
+        """
+        root = config.get("root_symbol", "ETH")
+        products = self._load_products()
+
+        candidates = [p for p in products if p["symbol"].startswith(("C-", "P-")) and root in p["symbol"]]
+
+        if self.debug:
+            print(f"[DEBUG] Found {len(candidates)} option candidates for {root}")
+            for p in candidates[:10]:
+                print(f" - {p['symbol']} (id={p['id']})")
+
+        if not candidates:
+            raise RuntimeError(f"No option products found for {root}")
+
+        chosen = candidates[0]  # TODO: refine to ATM/nearest expiry
+        if self.debug:
+            print(f"[DEBUG] Auto-selected option {chosen['symbol']} (id={chosen['id']})")
+        return chosen["symbol"]
+
     def get_option_ohlcv(self, symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
         return self._fetch_candles(symbol, timeframe, start, end)
 
     def get_perp_ohlcv(self, symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
         return self._fetch_candles(symbol, timeframe, start, end)
-    
+
+    # -------------------------------
+    # Candle fetching
+    # -------------------------------
     def _fetch_candles(self, symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame:
-        # Normalize timeframe
-        tf_map = {
-            "15min": "15m",
-            "15m": "15m",
-            "1h": "1h",
-            "1hr": "1h",
-        }
+        tf_map = {"15min": "15m", "15m": "15m", "1h": "1h", "1hr": "1h"}
         interval = tf_map.get(timeframe.lower(), "15m")
 
-        symbol_param = self._symbol_param
-        value = symbol
-
-        if symbol_param == "product_id":
-            # Only treat exact underlying tickers as perps; NOT roots like "ETH" or "BTC"
-            UNDERLYINGS = {"ETHUSD", "BTCUSD"}
-            try:
-                value = int(symbol)  # numeric product id is fine
-            except Exception:
-                if symbol.upper() in UNDERLYINGS:
-                    if not self.explicit_perp_pid:
-                        raise RuntimeError(
-                            "Endpoint expects product_id but OPTIMUS_PERP_PRODUCT_ID is not set for underlying."
-                        )
-                    value = int(self.explicit_perp_pid)
-                else:
-                    # Option request must have an option product_id (auto-select or explicit)
-                    if not self.explicit_opt_pid:
-                        raise RuntimeError(
-                            "Endpoint expects product_id for option candles, but no option product id is available. "
-                            "Enable OPTIMUS_AUTO_SELECT=1 or set OPTIMUS_OPTION_PRODUCT_ID."
-                        )
-                    value = int(self.explicit_opt_pid)
+        if symbol.startswith(("C-ETH", "P-ETH")):  # option instrument
+            path = "/v2/option-chain/candles"
+        else:  # futures or perp
+            path = "/v2/candles"
 
         params = {
-            self._interval_param: interval,
-            symbol_param: value,
-            "limit": 1000,
-            self._start_param: start,
-            self._end_param: end,
+            "resolution": interval,
+            "start": start,
+            "end": end,
         }
 
-        data = self._get(self._candles_path, params, attempts=1)
+        if isinstance(symbol, str) and (symbol.startswith("C-") or symbol.startswith("P-")):
+            # Option contract → must resolve to product_id
+            products = self._load_products()
+            match = next((p for p in products if p["symbol"] == symbol), None)
+            if not match:
+                raise RuntimeError(f"Unknown option symbol: {symbol}")
+            params["product_id"] = match["id"]
+        else:
+            # Spot or perp
+            params["symbol"] = symbol if isinstance(symbol, str) else str(symbol)
 
-        payload = data if isinstance(data, list) else None
-        if payload is None and isinstance(data, dict):
-            for k in ("result", "data", "candles", "items"):
-                if isinstance(data.get(k), list):
-                    payload = data[k]
-                    break
+        data = self._get(path, params=params)
+        candles = data.get("result", [])
 
-        df = pd.DataFrame(payload or [])
-        return _ensure_ohlc_indexed(df)
+        if not candles:
+            raise RuntimeError(f"No candles returned for {symbol}")
 
-
-    # ---------- Auto selection ----------
-    def pick_option_instrument(self, config):
-        # explicit override
-        if self.explicit_opt_pid:
-            try:
-                int(self.explicit_opt_pid)
-                return self.explicit_opt_pid
-            except ValueError:
-                raise RuntimeError("Invalid OPTIMUS_OPTION_PRODUCT_ID (must be numeric).")
-
-        # auto-select enabled
-        if os.getenv("OPTIMUS_AUTO_SELECT", "0") == "1":
-            try:
-                return self._auto_select_option_pid()
-            except Exception as e:
-                raise RuntimeError(f"Auto-select failed: {e}")
-
-        # fallback = error (never return 'ETH' directly)
-        raise RuntimeError("No valid option product_id available. "
-                           "Set OPTIMUS_OPTION_PRODUCT_ID or enable OPTIMUS_AUTO_SELECT=1")
-
-
-    # ---------- Product catalog ----------
-    def _load_products(self, limit: int = 10000):
-        last_err = None
-        for path in PRODUCT_PATHS:
-            url = f"{self.base_url}{path}"
-            try:
-                data = self._get(path, {"limit": limit}, attempts=1)
-                return data
-            except Exception as e:
-                last_err = e
-        raise RuntimeError(f"Failed to fetch products from Delta API, last error: {last_err}")
-
-
-
-    def _symbol_for_product_id(self, pid: int) -> Optional[str]:
-        try:
-            df = self._load_products()
-        except Exception:
-            return None
-        row = df.loc[df["product_id"] == int(pid)]
-        if not row.empty:
-            return str(row.iloc[0]["symbol"])
-        return None
-
-    # ---------- Auto-picker ----------
-    def _auto_select_option_pid(
-        self,
-        root: str = None,
-        kind: str = "option",
-        now_utc=None
-    ) -> int:
-        """Auto-select nearest expiry option product_id for given root (default: from config)."""
-
-        # fallback to env if not provided
-        if root is None:
-            root = os.getenv("OPTIMUS_OPTION_ROOT", "ETH")
-
-        products = self._load_products().get("result", [])
-        candidates = [
-            p for p in products
-            if p.get("contract_type") == "option"
-            and p.get("underlying_asset", {}).get("symbol") == root
-        ]
-
-        if not candidates:
-            raise RuntimeError(f"No option products found for {root}")
-
-        # sort by expiry (nearest first)
-        candidates.sort(key=lambda x: x.get("settlement_time"))
-
-        product = candidates[0]
-        if self._debug:
-            print(f"[AUTOSELECT] Selected {product['symbol']} -> {product['id']}")
-        return product["id"]
-
-
-
-    # ---------- Underlying price ----------
-    def _get_underlying_price(self) -> float:
-        """
-        Fetch a recent price for the underlying via candles (limit=1).
-        If endpoint expects product_id, use OPTIMUS_PERP_PRODUCT_ID.
-        Otherwise use symbol param with underlying ticker (e.g., ETHUSD).
-        """
-        path = self._candles_path or "/v3/public/candles"
-        interval = "1h"
-        start = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        end = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        symbol_param = self._symbol_param
-        value: Any = self.underlying_symbol
-
-        if symbol_param == "product_id":
-            if not self.explicit_perp_pid:
-                raise RuntimeError(
-                    "OPTIMUS_CANDLES_SYMBOL_PARAM=product_id but OPTIMUS_PERP_PRODUCT_ID is not set"
-                )
-            value = int(self.explicit_perp_pid)
-
-        params = {
-            self._interval_param: "1h",
-            symbol_param: value,
-            "limit": 1,
-            self._start_param: start,
-            self._end_param: end,
-        }
-
-        data = self._get(path, params, attempts=1)
-        payload = data if isinstance(data, list) else None
-        if payload is None and isinstance(data, dict):
-            for k in ("result", "data", "candles", "items"):
-                if isinstance(data.get(k), list):
-                    payload = data[k]
-                    break
-
-        df = _ensure_ohlc_indexed(pd.DataFrame(payload or []))
-        if df.empty:
-            raise RuntimeError("No candles returned for underlying price probe.")
-        # last close as spot
-        return float(df["close"].iloc[-1])
-
+        return pd.DataFrame(candles)
